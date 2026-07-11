@@ -43,7 +43,16 @@ def search_web(state: ResearchState) -> ResearchState:
 
 
 def synthesize_report(state: ResearchState) -> ResearchState:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # UPDATED: Replaced gpt-4o-mini with gemini-2.5-flash using Gemini's OpenAI-compatible base URL.
+    # Reads GEMINI_API_KEY from environment variables to bypass OpenAI credit limits.
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    
+    llm = ChatOpenAI(
+        model="gemini-2.5-flash",
+        api_key=gemini_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        temperature=0
+    )
 
     results_text = "\n\n".join(
         f"Source: {r.get('url', 'N/A')}\nTitle: {r.get('title', 'N/A')}\nContent: {r.get('content', '')[:500]}"
