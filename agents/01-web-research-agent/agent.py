@@ -80,19 +80,21 @@ def build_graph() -> StateGraph:
 
 def main():
     parser = argparse.ArgumentParser(description="Web Research Agent")
-    parser.add_argument("--query", default="latest advances in AI agents 2024", help="Research query")
+    parser.add_argument("--query", default=None, help="Research query")
     args = parser.parse_args()
 
-    print(f"\n🔍 Researching: {args.query}\n")
+    # Priority: 1. CLI flag (--query) -> 2. Environment variable (TASK_PROMPT) -> 3. Fallback default
+    query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents 2024"
+
+    print(f"\n🔍 Researching: {query}\n")
 
     agent = build_graph()
-    result = agent.invoke({"query": args.query, "messages": [], "search_results": [], "report": ""})
+    result = agent.invoke({"query": query, "messages": [], "search_results": [], "report": ""})
 
     print("=" * 60)
     print("📄 RESEARCH REPORT")
     print("=" * 60)
     print(result["report"])
-
 
 if __name__ == "__main__":
     main()
