@@ -65,22 +65,17 @@ def synthesize_report(state: ResearchState) -> ResearchState:
 
 
 def save_as_pdf(text: str, filename: str = "research_report.pdf") -> str:
+    """Generates a clean PDF document using fpdf2 write() for automatic line wrapping."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.set_font("Helvetica", size=10)
     
-    # Sanitize text encoding to prevent latin-1 rendering crashes
+    # Sanitize characters to prevent latin-1 encoding errors
     clean_text = text.encode('latin-1', 'replace').decode('latin-1')
     
-    for line in clean_text.split("\n"):
-        if not line.strip():
-            pdf.ln(4)
-            continue
-            
-        # multi_cell with wrapmode='CHAR' prevents long URLs/tokens from exceeding margins
-        pdf.multi_cell(0, 6, line, wrapmode="CHAR")
-        
+    # pdf.write() handles auto-wrapping across margins natively
+    pdf.write(5, clean_text)
     pdf.output(filename)
     return filename
 
@@ -108,16 +103,16 @@ def main():
 
     report_content = result["report"]
 
-    # Output formatted report surrounded by delimiter tags for clean UI extraction
+    # Print output flanked by delimiter tags for clean UI extraction
     print("\n---REPORT_START---")
     print(report_content)
     print("---REPORT_END---\n")
 
-    # Generate PDF file
+    # Generate PDF file safely
     pdf_filename = "research_report.pdf"
     save_as_pdf(report_content, pdf_filename)
 
-    # Convert PDF to Base64 and output with delimiter tags for direct UI download
+    # Output Base64 payload for direct UI download
     if os.path.exists(pdf_filename):
         with open(pdf_filename, "rb") as f:
             b64_pdf = base64.b64encode(f.read()).decode("utf-8")
