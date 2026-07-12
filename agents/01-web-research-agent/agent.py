@@ -66,14 +66,20 @@ def synthesize_report(state: ResearchState) -> ResearchState:
 
 def save_as_pdf(text: str, filename: str = "research_report.pdf") -> str:
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Helvetica", size=11)
+    pdf.set_font("Helvetica", size=10)
     
-    # Clean up encoding issues for standard PDF generation
+    # Sanitize text encoding to prevent latin-1 rendering crashes
     clean_text = text.encode('latin-1', 'replace').decode('latin-1')
     
     for line in clean_text.split("\n"):
-        pdf.multi_cell(0, 7, line)
+        if not line.strip():
+            pdf.ln(4)
+            continue
+            
+        # multi_cell with wrapmode='CHAR' prevents long URLs/tokens from exceeding margins
+        pdf.multi_cell(0, 6, line, wrapmode="CHAR")
         
     pdf.output(filename)
     return filename
