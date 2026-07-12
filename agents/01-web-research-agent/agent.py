@@ -1,20 +1,18 @@
 """
 Web Research Agent using LangGraph + Tavily Search.
 
-Searches the web for a given topic, synthesizes findings, and returns
-a structured research report.
-
-Usage:
-    python agent.py
-    python agent.py --query "latest advances in quantum computing"
+Searches the web for a given topic, synthesizes findings, generates a PDF,
+and outputs a Base64 payload for direct UI downloads.
 """
 
 import argparse
+import base64
 import os
 from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from fpdf import FPDF
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
@@ -43,8 +41,6 @@ def search_web(state: ResearchState) -> ResearchState:
 
 
 def synthesize_report(state: ResearchState) -> ResearchState:
-    # UPDATED: Replaced gpt-4o-mini with gemini-2.5-flash using Gemini's OpenAI-compatible base URL.
-    # Reads GEMINI_API_KEY from environment variables to bypass OpenAI credit limits.
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     
     llm = ChatOpenAI(
@@ -68,6 +64,21 @@ def synthesize_report(state: ResearchState) -> ResearchState:
     return {"report": response.content, "messages": [response]}
 
 
+def save_as_pdf(text: str, filename: str = "research_report.pdf") -> str:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    
+    # Clean up encoding issues for standard PDF generation
+    clean_text = text.encode('latin-1', 'replace').decode('latin-1')
+    
+    for line in clean_text.split("\n"):
+        pdf.multi_cell(0, 7, line)
+        
+    pdf.output(filename)
+    return filename
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(ResearchState)
     graph.add_node("search", search_web)
@@ -83,18 +94,31 @@ def main():
     parser.add_argument("--query", default=None, help="Research query")
     args = parser.parse_args()
 
-    # Priority: 1. CLI flag (--query) -> 2. Environment variable (TASK_PROMPT) -> 3. Fallback default
+    # Prioritize: CLI argument -> Environment Variable -> Fallback Default
     query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents 2024"
-
-    print(f"\n🔍 Researching: {query}\n")
 
     agent = build_graph()
     result = agent.invoke({"query": query, "messages": [], "search_results": [], "report": ""})
 
-    print("=" * 60)
-    print("📄 RESEARCH REPORT")
-    print("=" * 60)
-    print(result["report"])
+    report_content = result["report"]
+
+    # Output formatted report surrounded by delimiter tags for clean UI extraction
+    print("\n---REPORT_START---")
+    print(report_content)
+    print("---REPORT_END---\n")
+
+    # Generate PDF file
+    pdf_filename = "research_report.pdf"
+    save_as_pdf(report_content, pdf_filename)
+
+    # Convert PDF to Base64 and output with delimiter tags for direct UI download
+    if os.path.exists(pdf_filename):
+        with open(pdf_filename, "rb") as f:
+            b64_pdf = base64.b64encode(f.read()).decode("utf-8")
+            print("\n---PDF_BASE64_START---")
+            print(b64_pdf)
+            print("---PDF_BASE64_END---\n")
+
 
 if __name__ == "__main__":
     main()
