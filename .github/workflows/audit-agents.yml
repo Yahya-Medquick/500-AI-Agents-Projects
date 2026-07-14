@@ -21,7 +21,7 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python -c '
+          cat << 'EOF' > audit.py
           import os, glob, re
 
           env_secrets = {
@@ -32,7 +32,7 @@ jobs:
 
           agent_files = glob.glob("agents/*/agent.py")
           print("=" * 85)
-          print(f"{ \"AGENT FOLDER\":<32 } | { \"REQUIRED KEYS\":<28 } | { \"STATUS\" }")
+          print(f"{'AGENT FOLDER':<32} | {'REQUIRED KEYS':<28} | {'STATUS'}")
           print("=" * 85)
 
           if not agent_files:
@@ -43,8 +43,7 @@ jobs:
               with open(filepath, "r") as f:
                   content = f.read()
               
-              # Detect any env key calls like getenv("KEY_NAME") or os.environ["KEY_NAME"]
-              keys_found = set(re.findall(r"(?:getenv|environ(?:\[|\.get\())\([\"'\"]([A-Z0-9_]+_KEY)", content))
+              keys_found = set(re.findall(r"(?:getenv|environ(?:\[|\.get\())\([\"']([A-Z0-9_]+_KEY)", content))
               keys_str = ", ".join(keys_found) if keys_found else "None"
               
               all_set = all(env_secrets.get(k, False) for k in keys_found) if keys_found else True
@@ -52,4 +51,5 @@ jobs:
               
               print(f"{folder:<32} | {keys_str:<28} | {status}")
           print("=" * 85)
-          '
+          EOF
+          python audit.py
