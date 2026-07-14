@@ -56,7 +56,11 @@ def synthesize_report(state: ResearchState) -> ResearchState:
     )
 
     messages = [
-        SystemMessage(content="You are a research analyst. Synthesize the search results into a clear, structured report with: Summary, Key Findings (bullet points), and Sources."),
+        SystemMessage(content=(
+            "You are a research analyst. Synthesize the search results into a clear, structured Markdown report "
+            "with: Summary, Key Findings (bullet points), and Sources. "
+            "IMPORTANT: Output ONLY the research text/markdown. Do NOT write Python scripts, code blocks, or instructions on how to create documents."
+        )),
         HumanMessage(content=f"Research query: {state['query']}\n\nSearch results:\n{results_text}"),
     ]
 
@@ -91,13 +95,12 @@ def export_pptx(text: str, filename: str = "report.pptx") -> str:
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "Research Report Summary"
-    slide.placeholders[1].text = text[:1200]  # First slide preview
+    slide.placeholders[1].text = text[:1200]
     prs.save(filename)
     return filename
 
 
 def export_python(text: str, filename: str = "script.py") -> str:
-    # Extract code blocks if LLM returned markdown code
     code_match = re.search(r"```python\n(.*?)\n```", text, re.DOTALL)
     code_content = code_match.group(1) if code_match else text
     with open(filename, "w", encoding="utf-8") as f:
@@ -109,13 +112,14 @@ def handle_on_demand_export(prompt: str, report_text: str):
     prompt_lower = prompt.lower()
     generated_file = None
 
-    if "pdf" in prompt_lower:
-        generated_file = export_pdf(report_text)
-    elif "doc" in prompt_lower or "word" in prompt_lower:
+    # Check export intents distinctly
+    if any(k in prompt_lower for k in ["docx", "word", "doc"]):
         generated_file = export_docx(report_text)
-    elif "ppt" in prompt_lower or "presentation" in prompt_lower or "slide" in prompt_lower:
+    elif "pdf" in prompt_lower:
+        generated_file = export_pdf(report_text)
+    elif any(k in prompt_lower for k in ["pptx", "presentation", "slides", "powerpoint"]):
         generated_file = export_pptx(report_text)
-    elif "code" in prompt_lower or "script" in prompt_lower or "python" in prompt_lower:
+    elif "export code" in prompt_lower or "generate python script" in prompt_lower:
         generated_file = export_python(report_text)
 
     if generated_file and os.path.exists(generated_file):
@@ -148,12 +152,10 @@ def main():
 
     report_content = result["report"]
 
-    # Print main Markdown output
     print("\n---REPORT_START---")
     print(report_content)
     print("---REPORT_END---\n")
 
-    # Only generate & stream file payload if explicitly asked in prompt
     handle_on_demand_export(query, report_content)
 
 
