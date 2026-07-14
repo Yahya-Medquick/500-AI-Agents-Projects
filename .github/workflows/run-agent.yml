@@ -4,10 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       agent_folder:
-        description: 'Target agent folder name'
-        required: true
+        description: 'Agent folder name (e.g. 01-web-research-agent or auto)'
+        required: false
+        default: 'auto'
       task_input:
-        description: 'Formatted prompt or instruction'
+        description: 'User prompt/task requirements'
         required: true
 
 jobs:
@@ -16,19 +17,94 @@ jobs:
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Execute Specialist Code
+      - name: Resolve Agent Folder
+        id: resolve-agent
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TASK_PROMPT: ${{ github.event.inputs.task_input }}
+          INPUT_FOLDER: ${{ github.event.inputs.agent_folder }}
+        run: |
+          cat << 'EOF' > resolve.py
+          import os, glob, json
+          from langchain_openai import ChatOpenAI
+
+          input_folder = os.getenv("INPUT_FOLDER", "auto")
+          task_prompt = os.getenv("TASK_PROMPT", "")
+
+          if input_folder != "auto" and os.path.exists(f"agents/{input_folder}"):
+              target = input_folder
+          else:
+              existing_agents = [os.path.basename(p) for p in glob.glob("agents/*") if os.path.isdir(p)]
+              llm = ChatOpenAI(
+                  model="gemini-2.5-flash",
+                  api_key=os.getenv("GEMINI_API_KEY"),
+                  base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                  temperature=0
+              )
+              prompt = (
+                  f"Task: '{task_prompt}'\n"
+                  f"Available agents: {json.dumps(existing_agents)}\n"
+                  "Select the best matching agent folder from Available agents. "
+                  "If NONE match or a specialist is required, return 'CREATE_NEW'. "
+                  "Return ONLY the folder name or 'CREATE_NEW'."
+              )
+              res = llm.invoke(prompt).content.strip().replace("`", "")
+              target = res if res in existing_agents else "CREATE_NEW"
+
+          print(f"SELECTED_AGENT={target}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"selected_agent={target}\n")
+          EOF
+          pip install langchain-openai python-dotenv
+          python resolve.py
+
+      - name: Auto-Create Missing Agent via Meta-Agent
+        id: meta-create
+        if: steps.resolve-agent.outputs.selected_agent == 'CREATE_NEW'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TASK_PROMPT: ${{ github.event.inputs.task_input }}
         run: |
-          cd agents/${{ github.event.inputs.agent_folder }}
+          pip install fpdf2 python-docx python-pptx langgraph
+          python scripts/meta_agent.py --prompt "$TASK_PROMPT" > meta_output.txt
+          cat meta_output.txt
+          
+          SLUG=$(grep "CREATED_AGENT_SLUG:" meta_output.txt | cut -d':' -f2 | tr -d '\r')
+          echo "NEW_SLUG=$SLUG" >> $GITHUB_ENV
+          
+          # Commit the new agent back to the repository
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add agents/
+          git commit -m "feat(agent): auto-minted new agent '$SLUG'"
+          git push origin main
+
+      - name: Determine Final Executable Folder
+        id: final-folder
+        run: |
+          if [ "${{ steps.resolve-agent.outputs.selected_agent }}" == "CREATE_NEW" ]; then
+            echo "folder=$NEW_SLUG" >> $GITHUB_OUTPUT
+          else
+            echo "folder=${{ steps.resolve-agent.outputs.selected_agent }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Agent Dependencies & Run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TASK_PROMPT: ${{ github.event.inputs.task_input }}
+        run: |
+          TARGET_DIR="agents/${{ steps.final-folder.outputs.folder }}"
+          echo "Executing Agent in: $TARGET_DIR"
+          cd "$TARGET_DIR"
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          python agent.py
+          python agent.py --query "$TASK_PROMPT"
