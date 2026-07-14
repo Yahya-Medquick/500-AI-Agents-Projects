@@ -1,0 +1,55 @@
+name: Audit Agents and Secrets
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Audit Agent Directories and Environment Requirements
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -c '
+          import os, glob, re
+
+          env_secrets = {
+              "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
+              "TAVILY_API_KEY": bool(os.getenv("TAVILY_API_KEY")),
+              "OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY"))
+          }
+
+          agent_files = glob.glob("agents/*/agent.py")
+          print("=" * 85)
+          print(f"{ \"AGENT FOLDER\":<32 } | { \"REQUIRED KEYS\":<28 } | { \"STATUS\" }")
+          print("=" * 85)
+
+          if not agent_files:
+              print("No agent files found in agents/*/agent.py")
+
+          for filepath in sorted(agent_files):
+              folder = filepath.split("/")[1]
+              with open(filepath, "r") as f:
+                  content = f.read()
+              
+              # Detect any env key calls like getenv("KEY_NAME") or os.environ["KEY_NAME"]
+              keys_found = set(re.findall(r"(?:getenv|environ(?:\[|\.get\())\([\"'\"]([A-Z0-9_]+_KEY)", content))
+              keys_str = ", ".join(keys_found) if keys_found else "None"
+              
+              all_set = all(env_secrets.get(k, False) for k in keys_found) if keys_found else True
+              status = "✅ READY" if all_set else "❌ MISSING KEYS"
+              
+              print(f"{folder:<32} | {keys_str:<28} | {status}")
+          print("=" * 85)
+          '
