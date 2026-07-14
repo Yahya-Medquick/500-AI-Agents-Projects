@@ -1,15 +1,14 @@
 """
-Web Research Agent using LangGraph + Tavily Search.
-
-Searches the web for a given topic, synthesizes findings, generates a PDF,
-and outputs a Base64 payload for direct UI downloads.
+Web Research Agent with On-Demand Document Exporters (PDF, DOCX, PPTX, PY).
 """
 
 import argparse
 import base64
 import os
+import re
 from typing import Annotated, TypedDict
 
+from docx import Document
 from dotenv import load_dotenv
 from fpdf import FPDF
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -17,6 +16,7 @@ from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from pptx import Presentation
 
 load_dotenv()
 
@@ -64,20 +64,66 @@ def synthesize_report(state: ResearchState) -> ResearchState:
     return {"report": response.content, "messages": [response]}
 
 
-def save_as_pdf(text: str, filename: str = "research_report.pdf") -> str:
-    """Generates a clean PDF document using fpdf2 write() for automatic line wrapping."""
+# --- ON-DEMAND EXPORT FUNCTIONS ---
+
+def export_pdf(text: str, filename: str = "report.pdf") -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.set_font("Helvetica", size=10)
-    
-    # Sanitize characters to prevent latin-1 encoding errors
     clean_text = text.encode('latin-1', 'replace').decode('latin-1')
-    
-    # pdf.write() handles auto-wrapping across margins natively
     pdf.write(5, clean_text)
     pdf.output(filename)
     return filename
+
+
+def export_docx(text: str, filename: str = "report.docx") -> str:
+    doc = Document()
+    doc.add_heading("Research Report", level=1)
+    for line in text.split("\n"):
+        if line.strip():
+            doc.add_paragraph(line)
+    doc.save(filename)
+    return filename
+
+
+def export_pptx(text: str, filename: str = "report.pptx") -> str:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Research Report Summary"
+    slide.placeholders[1].text = text[:1200]  # First slide preview
+    prs.save(filename)
+    return filename
+
+
+def export_python(text: str, filename: str = "script.py") -> str:
+    # Extract code blocks if LLM returned markdown code
+    code_match = re.search(r"```python\n(.*?)\n```", text, re.DOTALL)
+    code_content = code_match.group(1) if code_match else text
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(code_content)
+    return filename
+
+
+def handle_on_demand_export(prompt: str, report_text: str):
+    prompt_lower = prompt.lower()
+    generated_file = None
+
+    if "pdf" in prompt_lower:
+        generated_file = export_pdf(report_text)
+    elif "doc" in prompt_lower or "word" in prompt_lower:
+        generated_file = export_docx(report_text)
+    elif "ppt" in prompt_lower or "presentation" in prompt_lower or "slide" in prompt_lower:
+        generated_file = export_pptx(report_text)
+    elif "code" in prompt_lower or "script" in prompt_lower or "python" in prompt_lower:
+        generated_file = export_python(report_text)
+
+    if generated_file and os.path.exists(generated_file):
+        with open(generated_file, "rb") as f:
+            b64_str = base64.b64encode(f.read()).decode("utf-8")
+            print(f"\n---FILE_EXPORT_START:{generated_file}---")
+            print(b64_str)
+            print("---FILE_EXPORT_END---\n")
 
 
 def build_graph() -> StateGraph:
@@ -95,7 +141,6 @@ def main():
     parser.add_argument("--query", default=None, help="Research query")
     args = parser.parse_args()
 
-    # Prioritize: CLI argument -> Environment Variable -> Fallback Default
     query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents 2024"
 
     agent = build_graph()
@@ -103,22 +148,13 @@ def main():
 
     report_content = result["report"]
 
-    # Print output flanked by delimiter tags for clean UI extraction
+    # Print main Markdown output
     print("\n---REPORT_START---")
     print(report_content)
     print("---REPORT_END---\n")
 
-    # Generate PDF file safely
-    pdf_filename = "research_report.pdf"
-    save_as_pdf(report_content, pdf_filename)
-
-    # Output Base64 payload for direct UI download
-    if os.path.exists(pdf_filename):
-        with open(pdf_filename, "rb") as f:
-            b64_pdf = base64.b64encode(f.read()).decode("utf-8")
-            print("\n---PDF_BASE64_START---")
-            print(b64_pdf)
-            print("---PDF_BASE64_END---\n")
+    # Only generate & stream file payload if explicitly asked in prompt
+    handle_on_demand_export(query, report_content)
 
 
 if __name__ == "__main__":
