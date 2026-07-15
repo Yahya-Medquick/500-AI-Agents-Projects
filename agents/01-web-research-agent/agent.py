@@ -12,11 +12,13 @@ from docx import Document
 from dotenv import load_dotenv
 from fpdf import FPDF
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from pptx import Presentation
+
+# Import the key rotator helper at the top
+from scripts.gemini_rotator import get_gemini_llm
 
 load_dotenv()
 
@@ -41,14 +43,8 @@ def search_web(state: ResearchState) -> ResearchState:
 
 
 def synthesize_report(state: ResearchState) -> ResearchState:
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    
-    llm = ChatOpenAI(
-        model="gemini-2.5-flash",
-        api_key=gemini_key,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        temperature=0
-    )
+    # Replaced manual ChatOpenAI with rotator helper + gemini-3.5-flash
+    llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
 
     results_text = "\n\n".join(
         f"Source: {r.get('url', 'N/A')}\nTitle: {r.get('title', 'N/A')}\nContent: {r.get('content', '')[:500]}"
@@ -112,7 +108,6 @@ def handle_on_demand_export(prompt: str, report_text: str):
     prompt_lower = prompt.lower()
     generated_file = None
 
-    # Check export intents distinctly
     if any(k in prompt_lower for k in ["docx", "word", "doc"]):
         generated_file = export_docx(report_text)
     elif "pdf" in prompt_lower:
@@ -145,7 +140,7 @@ def main():
     parser.add_argument("--query", default=None, help="Research query")
     args = parser.parse_args()
 
-    query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents 2024"
+    query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents"
 
     agent = build_graph()
     result = agent.invoke({"query": query, "messages": [], "search_results": [], "report": ""})
