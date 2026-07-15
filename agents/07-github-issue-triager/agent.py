@@ -1,22 +1,25 @@
 """
-GitHub Issue Triager using LangGraph.
+GitHub Issue Triager using Gemini Key Rotation.
 
-Analyzes a GitHub issue and produces: severity label, category,
+Analyzes a GitHub issue and produces severity label, category,
 reproduction steps summary, and suggested assignee type.
-
-Usage:
-    python agent.py --title "Login fails on mobile Safari" --body "When I try..."
-    python agent.py --issue-url https://github.com/owner/repo/issues/123
 """
 
 import argparse
-import os
+import base64
 import json
+import os
 import re
+import requests
 
+from docx import Document
 from dotenv import load_dotenv
+from fpdf import FPDF
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from pptx import Presentation
+
+# Import the key rotator helper at the top
+from scripts.gemini_rotator import get_gemini_llm
 
 load_dotenv()
 
@@ -32,7 +35,7 @@ TRIAGE_PROMPT = """You are a GitHub issue triager. Analyze the issue and return 
   "needs_more_info": true/false,
   "triage_notes": "2-3 sentences of triager notes"
 }
-Return only valid JSON, no markdown."""
+Return only valid JSON, no markdown formatting."""
 
 
 def parse_json_response(text: str) -> dict:
@@ -47,7 +50,8 @@ def parse_json_response(text: str) -> dict:
 
 
 def triage_issue(title: str, body: str, labels: list[str] = None) -> dict:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # Uses key rotator with gemini-3.5-flash
+    llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
 
     issue_text = f"Title: {title}\n\nBody:\n{body}"
     if labels:
@@ -63,16 +67,12 @@ def triage_issue(title: str, body: str, labels: list[str] = None) -> dict:
 
 
 def fetch_github_issue(url: str) -> tuple[str, str, list]:
-    """Fetch issue details from GitHub API."""
-    import re
-    import requests
-
-    match = re.match(r"https://github.com/([^/]+)/([^/]+)/issues/(\d+)", url)
+    match = re.match(r"[https://github.com/](https://github.com/)([^/]+)/([^/]+)/issues/(\d+)", url)
     if not match:
         raise ValueError(f"Invalid GitHub issue URL: {url}")
 
     owner, repo, issue_num = match.groups()
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_num}"
+    api_url = f"[https://api.github.com/repos/](https://api.github.com/repos/){owner}/{repo}/issues/{issue_num}"
     headers = {}
     if token := os.getenv("GITHUB_TOKEN"):
         headers["Authorization"] = f"token {token}"
@@ -83,38 +83,113 @@ def fetch_github_issue(url: str) -> tuple[str, str, list]:
     return data["title"], data.get("body", ""), [l["name"] for l in data.get("labels", [])]
 
 
+def format_triage_markdown(title: str, result: dict) -> str:
+    severity = result.get("severity", "medium")
+    severity_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(severity, "⚪")
+    labels = result.get("labels", [])
+
+    return f"""# GitHub Issue Triage Report: {title}
+
+* **{severity_emoji} Severity:** {severity.upper()} (Priority Score: {result.get('priority_score', 'N/A')}/10)
+* **📁 Category:** {result.get('category', 'N/A')}
+* **👤 Suggested Assignee:** {result.get('assignee_type', 'any')} team
+* **🏷️ Labels:** {', '.join(labels) if labels else 'None'}
+* **❓ Needs More Info:** {'Yes' if result.get('needs_more_info') else 'No'}
+* **🔍 Reproduction Steps Clear:** {'Yes' if result.get('reproduction_clear') else 'No'}
+
+### Summary
+{result.get('summary', 'N/A')}
+
+### Triager Notes
+{result.get('triage_notes', 'N/A')}
+"""
+
+
+# --- ON-DEMAND EXPORT FUNCTIONS ---
+
+def export_pdf(text: str, filename: str = "triage_report.pdf") -> str:
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    clean_text = text.encode('latin-1', 'replace').decode('latin-1')
+    pdf.write(5, clean_text)
+    pdf.output(filename)
+    return filename
+
+
+def export_docx(text: str, filename: str = "triage_report.docx") -> str:
+    doc = Document()
+    doc.add_heading("GitHub Issue Triage Report", level=1)
+    for line in text.split("\n"):
+        if line.strip():
+            doc.add_paragraph(line)
+    doc.save(filename)
+    return filename
+
+
+def export_pptx(text: str, filename: str = "triage_report.pptx") -> str:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Issue Triage Summary"
+    slide.placeholders[1].text = text[:1200]
+    prs.save(filename)
+    return filename
+
+
+def handle_on_demand_export(prompt: str, report_text: str):
+    prompt_lower = prompt.lower()
+    generated_file = None
+
+    if any(k in prompt_lower for k in ["docx", "word", "doc"]):
+        generated_file = export_docx(report_text)
+    elif "pdf" in prompt_lower:
+        generated_file = export_pdf(report_text)
+    elif any(k in prompt_lower for k in ["pptx", "presentation", "slides", "powerpoint"]):
+        generated_file = export_pptx(report_text)
+
+    if generated_file and os.path.exists(generated_file):
+        with open(generated_file, "rb") as f:
+            b64_str = base64.b64encode(f.read()).decode("utf-8")
+            print(f"\n---FILE_EXPORT_START:{generated_file}---")
+            print(b64_str)
+            print("---FILE_EXPORT_END---\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="GitHub Issue Triager")
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--issue-url", help="GitHub issue URL")
     group.add_argument("--title", help="Issue title (use with --body)")
+    parser.add_argument("--query", help="General execution query/prompt")
     parser.add_argument("--body", default="", help="Issue body text")
     args = parser.parse_args()
 
+    task_prompt = args.query or os.getenv("TASK_PROMPT") or ""
+
     if args.issue_url:
-        print(f"\n🔍 Fetching issue from GitHub...")
         title, body, labels = fetch_github_issue(args.issue_url)
-    else:
+    elif args.title:
         title, body, labels = args.title, args.body, []
+    elif "github.com" in task_prompt and "/issues/" in task_prompt:
+        url_match = re.search(r"https://github\.com/[^\s]+", task_prompt)
+        if url_match:
+            title, body, labels = fetch_github_issue(url_match.group(0))
+        else:
+            title, body, labels = "Generic Task Request", task_prompt, []
+    else:
+        title = "Issue Report Request"
+        body = task_prompt or "Login fails on mobile Safari when clicking submit button."
+        labels = []
 
-    print(f"\n🏷️  Triaging: {title}\n")
     result = triage_issue(title, body, labels)
+    report_md = format_triage_markdown(title, result)
 
-    severity = result.get("severity", "medium")
-    labels = result.get("labels", [])
-    severity_emoji = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}.get(severity, "⚪")
+    print("\n---REPORT_START---")
+    print(report_md)
+    print("---REPORT_END---\n")
 
-    print("=" * 60)
-    print("📋 TRIAGE REPORT")
-    print("=" * 60)
-    print(f"{severity_emoji} Severity: {severity.upper()} (Priority: {result.get('priority_score', 'N/A')}/10)")
-    print(f"📁 Category: {result.get('category', 'N/A')}")
-    print(f"👤 Assignee: {result.get('assignee_type', 'any')} team")
-    print(f"🏷️  Labels: {', '.join(labels)}")
-    print(f"📝 Summary: {result.get('summary', 'N/A')}")
-    print(f"❓ Needs more info: {'Yes' if result.get('needs_more_info') else 'No'}")
-    print(f"🔍 Reproduction clear: {'Yes' if result.get('reproduction_clear') else 'No'}")
-    print(f"\n💭 Notes: {result.get('triage_notes', 'N/A')}")
+    handle_on_demand_export(task_prompt or title, report_md)
 
 
 if __name__ == "__main__":
