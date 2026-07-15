@@ -1,23 +1,25 @@
 """
-Meeting Notes Agent.
+Meeting Notes Agent using Gemini Key Rotation.
 
 Converts meeting transcript text into structured meeting notes:
 summary, action items, decisions, and follow-ups.
-
-Usage:
-    python agent.py --transcript meeting.txt
-    python agent.py --text "John: Let's ship v2 next Friday..."
 """
 
 import argparse
+import base64
 import json
 import os
 import re
 from datetime import date, datetime
 
+from docx import Document
 from dotenv import load_dotenv
+from fpdf import FPDF
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from pptx import Presentation
+
+# Import the key rotator helper at the top
+from scripts.gemini_rotator import get_gemini_llm
 
 load_dotenv()
 
@@ -37,7 +39,7 @@ NOTES_PROMPT = """You are a professional meeting note-taker. Convert the meeting
   "next_meeting": "scheduled time or TBD",
   "follow_up_questions": ["question needing resolution"]
 }
-Return only valid JSON."""
+Return only valid JSON, no markdown formatting."""
 
 SAMPLE_TRANSCRIPT = """
 Sarah: Alright everyone, let's get started. It's Monday the 3rd and we have John, Mike, and Lisa here.
@@ -77,7 +79,8 @@ def parse_json_response(text: str) -> dict:
 
 
 def generate_meeting_notes(transcript: str) -> dict:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # Uses key rotator with gemini-3.5-flash
+    llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
     messages = [
         SystemMessage(content=NOTES_PROMPT),
         HumanMessage(content=f"Meeting transcript:\n\n{transcript}"),
@@ -112,40 +115,94 @@ def format_notes(notes: dict) -> str:
     return "\n".join(lines)
 
 
+# --- ON-DEMAND EXPORT FUNCTIONS ---
+
+def export_pdf(text: str, filename: str = "meeting_notes.pdf") -> str:
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    clean_text = text.encode('latin-1', 'replace').decode('latin-1')
+    pdf.write(5, clean_text)
+    pdf.output(filename)
+    return filename
+
+
+def export_docx(text: str, filename: str = "meeting_notes.docx") -> str:
+    doc = Document()
+    doc.add_heading("Meeting Notes Report", level=1)
+    for line in text.split("\n"):
+        if line.strip():
+            doc.add_paragraph(line)
+    doc.save(filename)
+    return filename
+
+
+def export_pptx(text: str, filename: str = "meeting_notes.pptx") -> str:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Meeting Notes Summary"
+    slide.placeholders[1].text = text[:1200]
+    prs.save(filename)
+    return filename
+
+
+def handle_on_demand_export(prompt: str, report_text: str):
+    prompt_lower = prompt.lower()
+    generated_file = None
+
+    if any(k in prompt_lower for k in ["docx", "word", "doc"]):
+        generated_file = export_docx(report_text)
+    elif "pdf" in prompt_lower:
+        generated_file = export_pdf(report_text)
+    elif any(k in prompt_lower for k in ["pptx", "presentation", "slides", "powerpoint"]):
+        generated_file = export_pptx(report_text)
+
+    if generated_file and os.path.exists(generated_file):
+        with open(generated_file, "rb") as f:
+            b64_str = base64.b64encode(f.read()).decode("utf-8")
+            print(f"\n---FILE_EXPORT_START:{generated_file}---")
+            print(b64_str)
+            print("---FILE_EXPORT_END---\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Meeting Notes Agent")
-    group = parser.add_mutually_exclusive_group()
+    group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--transcript", help="Path to transcript text file")
     group.add_argument("--text", help="Transcript text directly")
+    parser.add_argument("--query", help="General execution prompt/task")
     parser.add_argument("--output", default="meeting_notes.md", help="Markdown output path")
     args = parser.parse_args()
 
-    if args.transcript:
-        with open(args.transcript) as f:
+    task_prompt = args.query or os.getenv("TASK_PROMPT") or ""
+
+    if args.transcript and os.path.exists(args.transcript):
+        with open(args.transcript, "r", encoding="utf-8", errors="ignore") as f:
             transcript = f.read()
-        print(f"\n📝 Processing: {args.transcript}\n")
     elif args.text:
         transcript = args.text
-        print("\n📝 Processing transcript...\n")
+    elif task_prompt:
+        transcript = task_prompt
     else:
-        print("\n📝 Using sample meeting transcript\n")
         transcript = SAMPLE_TRANSCRIPT
 
     notes = generate_meeting_notes(transcript)
     formatted = format_notes(notes)
 
-    print("=" * 60)
+    print("\n---REPORT_START---")
     print(formatted)
-    print("=" * 60)
+    print("---REPORT_END---\n")
 
     # Save to file
     output_file = args.output
     if os.path.exists(output_file) and args.output == "meeting_notes.md":
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = f"meeting_notes_{stamp}.md"
-    with open(output_file, "w") as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         f.write(formatted)
-    print(f"\n✅ Saved to: {output_file}")
+
+    handle_on_demand_export(task_prompt, formatted)
 
 
 if __name__ == "__main__":
