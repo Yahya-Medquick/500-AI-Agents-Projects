@@ -1,18 +1,29 @@
 """
-Web Research Agent with On-Demand Document Exporters (PDF, DOCX, PPTX, PY).
+Web Research Agent using LangGraph and Gemini Key Rotation.
+
+Multi-step agent that conducts web research:
+1. Formulates search queries based on the prompt
+2. Executes web searches and gathers information
+3. Synthesizes findings into a detailed research report
+
+Usage:
+    python agent.py --query "Latest advancements in quantum computing"
 """
 
 import argparse
 import base64
 import os
-import re
+import sys
 from typing import Annotated, TypedDict
+
+# Fix for ModuleNotFoundError when running scripts directly
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from docx import Document
 from dotenv import load_dotenv
 from fpdf import FPDF
+from langchain_community.tools import TavilySearchResults
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from pptx import Presentation
@@ -26,47 +37,79 @@ load_dotenv()
 class ResearchState(TypedDict):
     messages: Annotated[list, add_messages]
     query: str
-    search_results: list[dict]
-    report: str
+    search_queries: list[str]
+    search_results: list[str]
+    final_report: str
 
 
-def search_web(state: ResearchState) -> ResearchState:
-    tool = TavilySearch(max_results=5)
-    raw_results = tool.invoke(state["query"])
-    if isinstance(raw_results, dict):
-        results = raw_results.get("results", [])
-    elif isinstance(raw_results, list):
-        results = raw_results
-    else:
-        results = []
+def generate_queries(state: ResearchState) -> ResearchState:
+    # Uses key rotator with gemini-3.5-flash
+    llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
+    response = llm.invoke([
+        SystemMessage(content="You are a research assistant. Generate 3 distinct search queries to thoroughly research the given topic. Return them as a comma-separated list."),
+        HumanMessage(content=f"Topic: {state['query']}"),
+    ])
+    queries = [q.strip() for q in response.content.split(",")][:3]
+    return {"search_queries": queries, "messages": [response]}
+
+
+def execute_searches(state: ResearchState) -> ResearchState:
+    tool = TavilySearchResults(max_results=3)
+    results = []
+    for query in state["search_queries"]:
+        try:
+            res = tool.invoke({"query": query})
+            results.append(f"Query: {query}\nResults: {res}")
+        except Exception as e:
+            results.append(f"Query: {query}\nFailed with error: {str(e)}")
     return {"search_results": results}
 
 
 def synthesize_report(state: ResearchState) -> ResearchState:
-    # Replaced manual ChatOpenAI with rotator helper + gemini-3.5-flash
+    # Uses key rotator with gemini-3.5-flash
     llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
+    results_text = "\n\n".join(state["search_results"])
 
-    results_text = "\n\n".join(
-        f"Source: {r.get('url', 'N/A')}\nTitle: {r.get('title', 'N/A')}\nContent: {r.get('content', '')[:500]}"
-        for r in state["search_results"]
-    )
+    response = llm.invoke([
+        SystemMessage(content="""You are a senior research analyst. Synthesize the provided search results into a comprehensive research report.
+Include:
+1. Executive Summary
+2. Key Findings & Analysis
+3. Implications & Trends
+4. Conclusion & Key Takeaways"""),
+        HumanMessage(content=f"Research Topic: {state['query']}\n\nSearch Information:\n{results_text}"),
+    ])
 
-    messages = [
-        SystemMessage(content=(
-            "You are a research analyst. Synthesize the search results into a clear, structured Markdown report "
-            "with: Summary, Key Findings (bullet points), and Sources. "
-            "IMPORTANT: Output ONLY the research text/markdown. Do NOT write Python scripts, code blocks, or instructions on how to create documents."
-        )),
-        HumanMessage(content=f"Research query: {state['query']}\n\nSearch results:\n{results_text}"),
-    ]
+    return {"final_report": response.content, "messages": [response]}
 
-    response = llm.invoke(messages)
-    return {"report": response.content, "messages": [response]}
+
+def build_graph():
+    graph = StateGraph(ResearchState)
+    graph.add_node("plan", generate_queries)
+    graph.add_node("search", execute_searches)
+    graph.add_node("report", synthesize_report)
+    graph.set_entry_point("plan")
+    graph.add_edge("plan", "search")
+    graph.add_edge("search", "report")
+    graph.add_edge("report", END)
+    return graph.compile()
+
+
+def format_report_markdown(query: str, search_queries: list[str], report_text: str) -> str:
+    return f"""# Web Research Report
+
+* **Research Topic:** {query}
+* **Search Queries Used:** {', '.join(search_queries)}
+
+---
+
+{report_text}
+"""
 
 
 # --- ON-DEMAND EXPORT FUNCTIONS ---
 
-def export_pdf(text: str, filename: str = "report.pdf") -> str:
+def export_pdf(text: str, filename: str = "web_research_report.pdf") -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -77,9 +120,9 @@ def export_pdf(text: str, filename: str = "report.pdf") -> str:
     return filename
 
 
-def export_docx(text: str, filename: str = "report.docx") -> str:
+def export_docx(text: str, filename: str = "web_research_report.docx") -> str:
     doc = Document()
-    doc.add_heading("Research Report", level=1)
+    doc.add_heading("Web Research Report", level=1)
     for line in text.split("\n"):
         if line.strip():
             doc.add_paragraph(line)
@@ -87,20 +130,12 @@ def export_docx(text: str, filename: str = "report.docx") -> str:
     return filename
 
 
-def export_pptx(text: str, filename: str = "report.pptx") -> str:
+def export_pptx(text: str, filename: str = "web_research_report.pptx") -> str:
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[1])
-    slide.shapes.title.text = "Research Report Summary"
+    slide.shapes.title.text = "Web Research Report"
     slide.placeholders[1].text = text[:1200]
     prs.save(filename)
-    return filename
-
-
-def export_python(text: str, filename: str = "script.py") -> str:
-    code_match = re.search(r"```python\n(.*?)\n```", text, re.DOTALL)
-    code_content = code_match.group(1) if code_match else text
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(code_content)
     return filename
 
 
@@ -114,8 +149,6 @@ def handle_on_demand_export(prompt: str, report_text: str):
         generated_file = export_pdf(report_text)
     elif any(k in prompt_lower for k in ["pptx", "presentation", "slides", "powerpoint"]):
         generated_file = export_pptx(report_text)
-    elif "export code" in prompt_lower or "generate python script" in prompt_lower:
-        generated_file = export_python(report_text)
 
     if generated_file and os.path.exists(generated_file):
         with open(generated_file, "rb") as f:
@@ -125,33 +158,29 @@ def handle_on_demand_export(prompt: str, report_text: str):
             print("---FILE_EXPORT_END---\n")
 
 
-def build_graph() -> StateGraph:
-    graph = StateGraph(ResearchState)
-    graph.add_node("search", search_web)
-    graph.add_node("synthesize", synthesize_report)
-    graph.set_entry_point("search")
-    graph.add_edge("search", "synthesize")
-    graph.add_edge("synthesize", END)
-    return graph.compile()
-
-
 def main():
     parser = argparse.ArgumentParser(description="Web Research Agent")
-    parser.add_argument("--query", default=None, help="Research query")
+    parser.add_argument("--query", help="Research query or topic")
     args = parser.parse_args()
 
-    query = args.query or os.getenv("TASK_PROMPT") or "latest advances in AI agents"
+    task_prompt = args.query or os.getenv("TASK_PROMPT") or "Latest AI developments"
 
     agent = build_graph()
-    result = agent.invoke({"query": query, "messages": [], "search_results": [], "report": ""})
+    result = agent.invoke({
+        "query": task_prompt,
+        "messages": [],
+        "search_queries": [],
+        "search_results": [],
+        "final_report": "",
+    })
 
-    report_content = result["report"]
+    report_md = format_report_markdown(task_prompt, result["search_queries"], result["final_report"])
 
     print("\n---REPORT_START---")
-    print(report_content)
+    print(report_md)
     print("---REPORT_END---\n")
 
-    handle_on_demand_export(query, report_content)
+    handle_on_demand_export(task_prompt, report_md)
 
 
 if __name__ == "__main__":
