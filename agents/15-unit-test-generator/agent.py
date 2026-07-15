@@ -1,20 +1,23 @@
 """
-Unit Test Generator Agent.
+Unit Test Generator Agent using Gemini Key Rotation.
 
 Analyzes Python code and generates comprehensive pytest test suites
 covering happy paths, edge cases, and error conditions.
-
-Usage:
-    python agent.py --file path/to/module.py
-    python agent.py --code "def calculate_bmi(weight, height): return weight / height**2"
 """
 
 import argparse
+import base64
 import os
+import re
 
+from docx import Document
 from dotenv import load_dotenv
+from fpdf import FPDF
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from pptx import Presentation
+
+# Import the key rotator helper at the top
+from scripts.gemini_rotator import get_gemini_llm
 
 load_dotenv()
 
@@ -76,7 +79,8 @@ class ShoppingCart:
 
 
 def generate_tests(code: str, filename: str = "module") -> str:
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    # Uses key rotator with gemini-3.5-flash
+    llm = get_gemini_llm(model="gemini-3.5-flash", temperature=0)
     messages = [
         SystemMessage(content=TEST_PROMPT),
         HumanMessage(content=f"Generate tests for this Python code (from `{filename}`):\n\n```python\n{code}\n```"),
@@ -85,44 +89,9 @@ def generate_tests(code: str, filename: str = "module") -> str:
     return response.content
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Unit Test Generator")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--file", help="Python file to generate tests for")
-    group.add_argument("--code", help="Inline code to generate tests for")
-    parser.add_argument("--output", help="Output file path (default: test_<name>.py)")
-    args = parser.parse_args()
+def format_report_markdown(filename: str, tests_code: str) -> str:
+    return f"""# Unit Test Generation Report: {filename}
 
-    if args.file:
-        with open(args.file) as f:
-            code = f.read()
-        module_name = os.path.splitext(os.path.basename(args.file))[0]
-        print(f"\n🧪 Generating tests for: {args.file}")
-    elif args.code:
-        code = args.code
-        module_name = "module"
-        print(f"\n🧪 Generating tests for inline code")
-    else:
-        code = SAMPLE_CODE
-        module_name = "shopping"
-        print(f"\n🧪 Generating tests for sample code")
-
-    tests = generate_tests(code, module_name)
-
-    # Clean up markdown fences if present
-    if tests.startswith("```"):
-        lines = tests.split("\n")
-        tests = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-
-    output_file = args.output or f"test_{module_name}.py"
-    with open(output_file, "w") as f:
-        f.write(tests)
-
-    print(f"\n✅ Tests saved to: {output_file}")
-    print(f"\nRun with: pytest {output_file} -v")
-    print("\n" + "=" * 60)
-    print(tests[:500] + "..." if len(tests) > 500 else tests)
-
-
-if __name__ == "__main__":
-    main()
+### Generated Test Suite
+```python
+{tests_code}
