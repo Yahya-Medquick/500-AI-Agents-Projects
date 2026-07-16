@@ -102,9 +102,9 @@ jobs:
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TASK_PROMPT: ${{ github.event.inputs.task_input }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           TARGET_DIR="agents/${{ steps.final-folder.outputs.folder }}"
           echo "Executing Agent in: $TARGET_DIR"
-          cd "$TARGET_DIR"
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          python agent.py --query "$TASK_PROMPT"
+          if [ -f "$TARGET_DIR/requirements.txt" ]; then pip install -r "$TARGET_DIR/requirements.txt"; fi
+          python "$TARGET_DIR/agent.py" --query "$TASK_PROMPT"
