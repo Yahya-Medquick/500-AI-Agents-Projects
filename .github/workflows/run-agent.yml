@@ -11,6 +11,10 @@ on:
         description: 'User prompt/task requirements'
         required: true
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   run-agent:
     runs-on: ubuntu-latest
@@ -80,11 +84,12 @@ jobs:
           SLUG=$(grep "CREATED_AGENT_SLUG:" meta_output.txt | cut -d':' -f2 | tr -d '\r')
           echo "NEW_SLUG=$SLUG" >> $GITHUB_ENV
           
-          # Commit the new agent back to the repository
+          # Commit the new agent back to the repository safely with rebase
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add agents/
-          git commit -m "feat(agent): auto-minted new agent '$SLUG'"
+          git commit -m "feat(agent): auto-minted new agent '$SLUG'" || echo "Nothing to commit"
+          git pull --rebase origin main
           git push origin main
 
       - name: Determine Final Executable Folder
